@@ -92,7 +92,7 @@ def get_iterator(dataset, batch_size, is_train):
 
 
 
-def load_dataset_robonet(batch_size, video_len, is_train, dataset_name):
+def load_dataset_robonet(batch_size, video_len, is_train):
   """"Load RoboNet dataset."""
 
   def extract_features_robonet(features):
@@ -109,15 +109,15 @@ def load_dataset_robonet(batch_size, video_len, is_train, dataset_name):
     in_list = tf.reduce_any(tf.math.equal(features['filename'], filenames))
     return in_list if white else tf.math.logical_not(in_list)
 
-  def get_robonet_test_filenames(dataset_name):
+  def get_robonet_test_filenames():
     testfiles = None
     if testfiles is None:
-      with tf.io.gfile.GFile(f'{dataset_name}_testset_filenames.txt', 'r') as f:
+      with tf.io.gfile.GFile('robonet_testset_filenames.txt', 'r') as f:
         testfiles = f.read()
     testfiles = ([x.encode('ascii') for x in testfiles.split('\n') if x])
     return testfiles
 
-  dataset_builder = tfds.builder(f'robonet/{dataset_name}_64')
+  dataset_builder = tfds.builder('robonet/robonet_64')
   dataset_builder.download_and_prepare()
   num_examples = dataset_builder.info.splits['train'].num_examples
   split_size = num_examples // jax.host_count()
@@ -129,7 +129,7 @@ def load_dataset_robonet(batch_size, video_len, is_train, dataset_name):
   options.experimental_threading.max_intra_op_parallelism = 1
   dataset = dataset.with_options(options)
 
-  test_filenames = get_robonet_test_filenames(dataset_name)
+  test_filenames = get_robonet_test_filenames()
   train_filter = functools.partial(
       robonet_filter_by_filename, filenames=test_filenames, white=not is_train)
 
@@ -138,3 +138,57 @@ def load_dataset_robonet(batch_size, video_len, is_train, dataset_name):
       extract_features_robonet,
       num_parallel_calls=tf.data.experimental.AUTOTUNE)
   return get_iterator(dataset, batch_size, is_train)
+
+def load_dataset_robonet_sample(batch_size, video_len):
+  """"Load RoboNet Sample dataset."""
+
+  def extract_features_robonet(features):
+    dtype = tf.float32
+    video = tf.cast(features['video'], dtype)
+    actions = tf.cast(features['actions'], dtype)
+    video /= 255.0
+    return {
+        'video': tf.identity(video[:video_len]),
+        'actions': tf.identity(actions[:video_len-1]),
+    }
+
+  dataset_builder = tfds.builder(f'robonet/robonet_sample_64')
+  dataset_builder.download_and_prepare()
+  # num_examples = dataset_builder.info.splits['train'].num_examples
+
+  # calculate split percentage and generate dataset
+  valid_start = random.randint(0, 80)
+  valid_end = valid_start + 10
+  valid_split = f'train[{valid_start}%:{valid_end}%]'
+  train_split = f'train[0%:{valid_start}%]+train[{valid_end}%:90%]'
+
+  train_dataset = dataset_builder.as_dataset(split=train_split)
+  valid_dataset = dataset_builder.as_dataset(split=valid_split)
+  test_dataset  = dataset_builder.as_dataset(split='train[90%:]')
+
+  # set options and extract features
+  options = tf.data.Options()
+  options.experimental_threading.private_threadpool_size = 48
+  options.experimental_threading.max_intra_op_parallelism = 1
+
+  train_dataset = train_dataset.with_options(options)
+  train_dataset = train_dataset.map(
+    extract_features_robonet,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  valid_dataset = valid_dataset.with_options(options)
+  valid_dataset = valid_dataset.map(
+    extract_features_robonet,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  test_dataset = test_dataset.with_options(options)
+  test_dataset = test_dataset.map(
+    extract_features_robonet,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  itrs = [
+    get_iterator(train_dataset, batch_size, True),
+    get_iterator(valid_dataset, batch_size, False),
+    get_iterator(test_dataset, batch_size, False)
+  ]
+  return itrs

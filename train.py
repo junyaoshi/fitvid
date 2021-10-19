@@ -165,11 +165,13 @@ def get_log_directories():
   return model_dir, summary_writer
 
 
-def get_data(training):
+def get_data():
   video_len = FLAGS.n_past + FLAGS.n_future
   local_batch_size = FLAGS.batch_size // jax.host_count()
-  if FLAGS.dataset == 'robonet' or FLAGS.dataset == 'robonet_sample':
-    return data.load_dataset_robonet(local_batch_size, video_len, training, FLAGS.dataset)
+  if FLAGS.dataset == 'robonet_sample':
+    return data.load_dataset_robonet_sample(local_batch_size, video_len)
+  elif FLAGS.dataset == 'robonet':
+    raise NotImplementedError
   else:
     raise ValueError(f'Unrecognized dataset: {FLAGS.dataset}')
 
@@ -219,9 +221,9 @@ def train():
   log_every = FLAGS.log_every
 
   model_dir, summary_writer = get_log_directories()
-  data_itr = get_data(True)
+  train_itr, valid_itr, test_itr = get_data()
 
-  batch = next(data_itr)
+  batch = next(train_itr)
   sample = utils.get_first_device(batch)
 
   model = MODEL_CLS(n_past=FLAGS.n_past, training=True)
@@ -254,7 +256,7 @@ def train():
           write_summaries(summary_writer, train_metrics, step, out_video, gt)
           logging.info('>>> Step: %d Loss: %.4f', step, train_metrics['loss/all'])
 
-      batch = next(data_itr)
+      batch = next(train_itr)
     except KeyboardInterrupt:
       print('Manual keyboard interrupt occured.')
       print(f'Done training for {step} steps')
