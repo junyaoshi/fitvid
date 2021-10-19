@@ -45,6 +45,7 @@ def eval_model():
   rng_key = jax.random.PRNGKey(0)
 
   log_dir = os.path.join(FLAGS.output_dir, 'evaluate')
+  checkpoint_dir = os.path.join(FLAGS.output_dir, 'model')
   summary_writer = tensorboard.SummaryWriter(log_dir)
 
   data_itr = get_data(False)
@@ -57,7 +58,7 @@ def eval_model():
   last_checkpoint = int(state.step)
   rng_key = jax.random.split(rng_key, jax.local_device_count())
   while True:
-    state = checkpoints.restore_checkpoint(FLAGS.output_dir, state)
+    state = checkpoints.restore_checkpoint(checkpoint_dir, state)
     if int(state.step) == last_checkpoint:
       time.sleep(60)  # sleep for 60 secs
     else:
