@@ -42,6 +42,19 @@ from fitvid.metrics import psnr_per_frame
 from fitvid.metrics import ssim
 import numpy as np
 import tensorflow.compat.v2 as tf
+from tqdm import trange
+
+
+# limit GPU memory
+
+# gpus = tf.config.experimental.list_physical_devices('GPU')
+# for gpu in gpus:
+#   tf.config.experimental.set_memory_growth(gpu, True)
+#   # tf.config.experimental.set_virtual_device_configuration(
+#   #   gpu,
+#   #   [tf.config.experimental.VirtualDeviceConfiguration(memory_limit=1024)]
+#   # )
+#   print('limited gpus!')
 
 
 FLAGS = flags.FLAGS
@@ -52,6 +65,7 @@ flags.DEFINE_integer('n_past', 2, 'Number of past frames.')
 flags.DEFINE_integer('n_future', 10, 'Number of future frames.')
 flags.DEFINE_integer('training_steps', 10000000, 'Number of training steps.')
 flags.DEFINE_integer('log_every', 1000, 'How frequently log.')
+flags.DEFINE_string('dataset', 'robonet', 'name of dataset.')
 
 
 MODEL_CLS = models.FitVid
@@ -154,7 +168,11 @@ def get_log_directories():
 def get_data(training):
   video_len = FLAGS.n_past + FLAGS.n_future
   local_batch_size = FLAGS.batch_size // jax.host_count()
-  return data.load_dataset_robonet(local_batch_size, video_len, training)
+  if FLAGS.dataset == 'robonet' or FLAGS.dataset == 'robonet_sample':
+    return data.load_dataset_robonet(local_batch_size, video_len, training, FLAGS.dataset)
+  else:
+    raise ValueError(f'Unrecognized dataset: {FLAGS.dataset}')
+
 
 
 def init_model_state(rng_key, model, sample):
@@ -215,11 +233,33 @@ def train():
 
   rng_key = jax.random.split(rng_key, jax.local_device_count())
   t_loop_start = time.time()
-  for step in range(start_step, training_steps):
-    output = train_step(model, batch, state, rng_key)
-    state, rng_key, metrics, out_video = output
+  for step in trange(start_step, training_steps):
+    try:
+      output = train_step(model, batch, state, rng_key)
+      state, rng_key, metrics, out_video = output
 
-    if step % log_every == 0:
+      if step % log_every == 0:
+        state = utils.sync_batch_stats(state)
+        steps_per_sec = log_every / (time.time() - t_loop_start)
+        t_loop_start = time.time()
+        if jax.host_id() == 0:
+          train_metrics = utils.get_average_across_devices(metrics)
+          state_ = jax_utils.unreplicate(state)
+          checkpoints.save_checkpoint(model_dir, state_, step, keep=3)
+          summary_writer.scalar('info/steps-per-second', steps_per_sec, step)
+          out_video = utils.get_all_devices(out_video)
+          gt = utils.get_all_devices(batch['video'])[:, 1:]
+          train_metrics = additional_metrics(train_metrics, gt, out_video)
+          train_metrics['graphs/psnr'] = psnr_per_frame(gt, out_video)
+          write_summaries(summary_writer, train_metrics, step, out_video, gt)
+          logging.info('>>> Step: %d Loss: %.4f', step, train_metrics['loss/all'])
+
+      batch = next(data_itr)
+    except KeyboardInterrupt:
+      print('Manual keyboard interrupt occured.')
+      print(f'Done training for {step} steps')
+      output = train_step(model, batch, state, rng_key)
+      state, rng_key, metrics, out_video = output
       state = utils.sync_batch_stats(state)
       steps_per_sec = log_every / (time.time() - t_loop_start)
       t_loop_start = time.time()
@@ -234,9 +274,7 @@ def train():
         train_metrics['graphs/psnr'] = psnr_per_frame(gt, out_video)
         write_summaries(summary_writer, train_metrics, step, out_video, gt)
         logging.info('>>> Step: %d Loss: %.4f', step, train_metrics['loss/all'])
-
-    batch = next(data_itr)
-
+      print('Saved model checkpoint. Ending process.')
 
 def main(argv):
   del argv  # Unused
