@@ -146,7 +146,7 @@ def load_dataset_robonet_sample(batch_size, video_len):
     dtype = tf.float32
     video = tf.cast(features['video'], dtype)
     actions = tf.cast(features['actions'], dtype)
-    video /= 255.0
+    # video /= 255.0
     return {
         'video': tf.identity(video[:video_len]),
         'actions': tf.identity(actions[:video_len-1]),
