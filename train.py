@@ -91,6 +91,7 @@ def write_summaries(summary_writer, metrics, step, vid_out, gt):
       summary_writer.histogram(tag, val, step)
     else:
       summary_writer.scalar(tag, val, step)
+
   # GIFs
   video_summary = np.concatenate([gt, vid_out], axis=3)
   utils.write_video_summaries(summary_writer, video_summary, 1, step)
@@ -241,9 +242,13 @@ def train():
       state, rng_key, metrics, out_video = output
 
       if step % log_every == 0:
+        # process training info
         state = utils.sync_batch_stats(state)
         steps_per_sec = log_every / (time.time() - t_loop_start)
         t_loop_start = time.time()
+
+        # run model on validation set
+
         if jax.host_id() == 0:
           train_metrics = utils.get_average_across_devices(metrics)
           state_ = jax_utils.unreplicate(state)
