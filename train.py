@@ -273,7 +273,7 @@ def train():
   # variables for early stopping
   best_valid_loss = np.inf
   last_improvement = 0
-  patience = 10
+  patience = 20
 
   for step in trange(start_step, training_steps):
     try:
@@ -288,7 +288,7 @@ def train():
         if jax.host_id() == 0:
           train_metrics = utils.get_average_across_devices(metrics)
           state_ = jax_utils.unreplicate(synced_state)
-          checkpoints.save_checkpoint(model_dir, state_, step, keep=patience)
+          checkpoints.save_checkpoint(model_dir, state_, step, keep=patience//2, keep_every_n_steps=50)
           train_summary_writer.scalar('info/steps-per-second', steps_per_sec, step)
           out_video = utils.get_all_devices(out_video)
           gt = utils.get_all_devices(train_batch['video'])[:, FLAGS.n_past:]
@@ -352,7 +352,7 @@ def train():
       if jax.host_id() == 0:
         train_metrics = utils.get_average_across_devices(metrics)
         state_ = jax_utils.unreplicate(synced_state)
-        checkpoints.save_checkpoint(model_dir, state_, step, keep=patience)
+        checkpoints.save_checkpoint(model_dir, state_, step, keep=patience//2, keep_every_n_steps=50)
         train_summary_writer.scalar('info/steps-per-second', steps_per_sec, step)
         out_video = utils.get_all_devices(out_video)
         gt = utils.get_all_devices(train_batch['video'])[:, FLAGS.n_past:]
