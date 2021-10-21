@@ -21,6 +21,7 @@ from __future__ import print_function
 import functools
 import os
 import time
+import random
 
 from absl import app
 from absl import flags
@@ -93,18 +94,23 @@ def write_summaries(summary_writer, metrics, step, vid_past, vid_out, gt):
       summary_writer.scalar(tag, val, step)
 
   # GIFs
+  video_summary = generate_video_summary(vid_past, vid_out, gt)
+  utils.write_video_summaries(summary_writer, video_summary, 1, step)
+  summary_writer.flush()
+
+
+def generate_video_summary(vid_past, vid_out, gt):
   # concatenate past and future gt frames
   gt = np.concatenate([vid_past, gt], axis=1)
 
   # add borders and concatenat past and future output frames
   vid_past, vid_out = vid_past.copy(), vid_out.copy()
   vid_past[:, :, :, [0, -1]] = vid_past[:, :, [0, -1]] = np.array([1., 0., 0.])  # change border to red
-  vid_out[:, :, :, [0, -1]]  = vid_out[:, :, [0, -1]]  = np.array([0., 1., 0.])  # change border to green
+  vid_out[:, :, :, [0, -1]] = vid_out[:, :, [0, -1]] = np.array([0., 1., 0.])  # change border to green
   vid_out = np.concatenate([vid_past, vid_out], axis=1)
 
   video_summary = np.concatenate([gt, vid_out], axis=3)
-  utils.write_video_summaries(summary_writer, video_summary, 1, step)
-  summary_writer.flush()
+  return video_summary
 
 
 @functools.partial(jax.pmap, axis_name='batch', static_broadcasted_argnums=0)
@@ -250,6 +256,10 @@ def train():
   train_batch = next(train_itr)
   sample = utils.get_first_device(train_batch)
 
+  # use this to see model progress on a single validation video
+  single_valid_vid_idx = random.randint(0, FLAGS.batch_size)
+  single_valid_batch = next(valid_itr)
+
   model = MODEL_CLS(n_past=FLAGS.n_past, training=True)
 
   state = init_model_state(rng_key, model, sample)
@@ -259,6 +269,12 @@ def train():
 
   rng_key = jax.random.split(rng_key, jax.local_device_count())
   t_loop_start = time.time()
+
+  # variables for early stopping
+  best_valid_loss = np.inf
+  last_improvement = 0
+  patience = 10
+
   for step in trange(start_step, training_steps):
     try:
       output = train_step(model, train_batch, state, rng_key)
@@ -272,7 +288,7 @@ def train():
         if jax.host_id() == 0:
           train_metrics = utils.get_average_across_devices(metrics)
           state_ = jax_utils.unreplicate(synced_state)
-          checkpoints.save_checkpoint(model_dir, state_, step, keep=3)
+          checkpoints.save_checkpoint(model_dir, state_, step, keep=patience)
           train_summary_writer.scalar('info/steps-per-second', steps_per_sec, step)
           out_video = utils.get_all_devices(out_video)
           gt = utils.get_all_devices(train_batch['video'])[:, FLAGS.n_past:]
@@ -287,8 +303,13 @@ def train():
         valid_output = eval_step(model, valid_batch, state, rng_key)
         valid_gt, valid_out_video, valid_metrics = valid_output
 
+        # run model on single validation video for progress tracking
+        single_valid_output = eval_step(model, single_valid_batch, state, rng_key)
+        single_valid_gt, single_valid_out, _ = single_valid_output
+
         # process and log validation info
         if jax.host_id() == 0:
+          # validation set
           valid_metrics = utils.get_average_across_devices(valid_metrics)
           valid_out_video = utils.get_all_devices(valid_out_video)
           valid_gt = utils.get_all_devices(valid_gt)
@@ -298,10 +319,31 @@ def train():
           write_summaries(valid_summary_writer, valid_metrics, step, valid_past_video, valid_out_video, valid_gt)
           logging.info('>>> Step: %d Valid Loss: %.4f', step, valid_metrics['loss/all'])
 
+          # single validation video
+          single_valid_out = utils.get_all_devices(single_valid_out)
+          single_valid_gt = utils.get_all_devices(single_valid_gt)
+          single_valid_past = utils.get_all_devices(single_valid_batch['video'][:, :, :FLAGS.n_past])
+          video_summary = generate_video_summary(single_valid_past, single_valid_out, single_valid_gt)
+          utils.write_single_video_summaries(valid_summary_writer, video_summary, single_valid_vid_idx, step)
+          valid_summary_writer.flush()
+
+        # early stopping
+        valid_loss = valid_metrics['loss/all']
+        if valid_loss < best_valid_loss:
+          best_valid_loss = valid_loss
+          last_improvement = 0
+        else:
+          last_improvement += 1
+        if last_improvement > patience:
+          logging.info('No improvement for the past %d steps. Stopping the training...', patience)
+          break
+        logging.info('>>> Step: %d Best Valid Loss: %.4f Last Improvement: %d',
+                     patience, best_valid_loss, last_improvement)
+
       train_batch = next(train_itr)
     except KeyboardInterrupt:
-      print('Manual keyboard interrupt occured.')
-      print(f'Done training for {step} steps')
+      logging.info('Manual keyboard interrupt occured.')
+      logging.info(f'Done training for %d steps', step)
       output = train_step(model, train_batch, state, rng_key)
       state, rng_key, metrics, out_video = output
       synced_state = utils.sync_batch_stats(state)
@@ -310,7 +352,7 @@ def train():
       if jax.host_id() == 0:
         train_metrics = utils.get_average_across_devices(metrics)
         state_ = jax_utils.unreplicate(synced_state)
-        checkpoints.save_checkpoint(model_dir, state_, step, keep=3)
+        checkpoints.save_checkpoint(model_dir, state_, step, keep=patience)
         train_summary_writer.scalar('info/steps-per-second', steps_per_sec, step)
         out_video = utils.get_all_devices(out_video)
         gt = utils.get_all_devices(train_batch['video'])[:, FLAGS.n_past:]
@@ -319,7 +361,7 @@ def train():
         past_video = train_batch[:, :FLAGS.n_past]
         write_summaries(train_summary_writer, train_metrics, step, past_video, out_video, gt)
         logging.info('>>> Step: %d Train Loss: %.4f', step, train_metrics['loss/all'])
-      print('Saved model checkpoint. Ending process.')
+      logging.info('Saved model checkpoint. Ending process.')
 
 def main(argv):
   del argv  # Unused

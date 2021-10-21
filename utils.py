@@ -188,6 +188,22 @@ def write_video_summaries(summary_writer, video_batch, num_samples, step):
     summary_writer.image(tag="sidebyside_%d"%i, image=mo, step=step)
 
 
+def write_single_video_summaries(summary_writer, video_batch, video_idx, step):
+  """Writes a video summary in gif and side by side images format."""
+  video_batch = image_float_to_uint(video_batch)
+  _, video_len, w, h, c = tuple(video_batch.shape)
+  video = video_batch[video_idx]
+  summary = encode_gif(video, fps=15)
+  tensor = tf.concat(
+      [tf.as_string(w), tf.as_string(h), tf.convert_to_tensor(summary)],
+      axis=0)
+  md = metadata.create_summary_metadata(
+      display_name=None, description=None)
+  summary_writer.write(tag="gif_single", tensor=tensor, step=step, metadata=md)
+  mo = np.reshape(video, [w * video_len, h, c])
+  summary_writer.image(tag="sidebyside_single", image=mo, step=step)
+
+
 def scheduler(
     factors="constant * linear_warmup * rsqrt_decay",
     base_learning_rate=0.5,
