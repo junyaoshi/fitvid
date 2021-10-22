@@ -23,6 +23,7 @@ import jax
 import numpy as np
 import tensorflow as tf  # tf
 import tensorflow_datasets as tfds
+import something_something  # Register something_something
 
 
 def rand_crop(seeds, video, width, height, wiggle):
@@ -140,19 +141,18 @@ def load_dataset_robonet(batch_size, video_len, is_train):
   return get_iterator(dataset, batch_size, is_train)
 
 def load_dataset_robonet_sample(batch_size, video_len):
-  """"Load RoboNet Sample dataset."""
+  """Load RoboNet Sample dataset."""
 
   def extract_features_robonet(features):
     dtype = tf.float32
     video = tf.cast(features['video'], dtype)
     actions = tf.cast(features['actions'], dtype)
-    # video /= 255.0
     return {
         'video': tf.identity(video[:video_len]),
         'actions': tf.identity(actions[:video_len-1]),
     }
 
-  dataset_builder = tfds.builder(f'robonet/robonet_sample_64')
+  dataset_builder = tfds.builder('robonet/robonet_sample_64')
   dataset_builder.download_and_prepare()
   # num_examples = dataset_builder.info.splits['train'].num_examples
 
@@ -190,5 +190,48 @@ def load_dataset_robonet_sample(batch_size, video_len):
     get_iterator(train_dataset, batch_size, True),
     get_iterator(valid_dataset, batch_size, False),
     get_iterator(test_dataset, batch_size, False)
+  ]
+  return itrs
+
+
+def load_dataset_something_something(batch_size, video_len):
+  """Load something_something dataset."""
+
+  def extract_features_smth_smth(features):
+    dtype = tf.float32
+    first_frame = features['first_frame']
+    last_frame = features['last_frame']
+    video = tf.stack([first_frame, last_frame])
+    actions = np.zeros((video_len - 1, 5))  # action not used, just need to match dimension
+    video = tf.cast(video, dtype)
+    actions = tf.cast(actions, dtype)
+    return {
+        'video': tf.identity(video),
+        'actions': tf.identity(actions),
+    }
+
+  dataset_builder = tfds.builder('something_something')
+  dataset_builder.download_and_prepare()
+  train_dataset = dataset_builder.as_dataset(split='train')
+  valid_dataset = dataset_builder.as_dataset(split='valid')
+
+  # set options and extract features
+  options = tf.data.Options()
+  options.experimental_threading.private_threadpool_size = 48
+  options.experimental_threading.max_intra_op_parallelism = 1
+
+  train_dataset = train_dataset.with_options(options)
+  train_dataset = train_dataset.map(
+    extract_features_smth_smth,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  valid_dataset = valid_dataset.with_options(options)
+  valid_dataset = valid_dataset.map(
+    extract_features_smth_smth,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  itrs = [
+    get_iterator(train_dataset, batch_size, True),
+    get_iterator(valid_dataset, batch_size, False),
   ]
   return itrs
