@@ -24,6 +24,8 @@ import numpy as np
 import tensorflow as tf  # tf
 import tensorflow_datasets as tfds
 import something_something  # Register something_something
+import something_something_DVD  # Register something_something_DVD
+import something_something_DVD_subgoal  # Register something_something_DVD_subgoal
 
 
 def rand_crop(seeds, video, width, height, wiggle):
@@ -232,6 +234,95 @@ def load_dataset_something_something(batch_size, video_len):
 
   itrs = [
     get_iterator(train_dataset, batch_size, True),
-    get_iterator(valid_dataset, batch_size, False),
+    get_iterator(valid_dataset, batch_size, True),
+  ]
+  return itrs
+
+
+def load_dataset_something_something_dvd(batch_size):
+  """Load something_something dataset."""
+
+  def extract_features_smth_smth(features):
+    dtype = tf.float32
+    first_frame = features['first_frame']
+    label = features['label']
+    last_frame = features['last_frame']
+    video = tf.stack([first_frame, last_frame])
+    actions = tf.expand_dims(label, axis=0)
+    video = tf.cast(video, dtype)
+    actions = tf.cast(actions, dtype)
+    return {
+        'video': tf.identity(video),
+        'actions': tf.identity(actions),
+    }
+
+  dataset_builder = tfds.builder('something_something_DVD')
+  dataset_builder.download_and_prepare()
+  train_dataset = dataset_builder.as_dataset(split='train')
+  valid_dataset = dataset_builder.as_dataset(split='valid')
+
+  # set options and extract features
+  options = tf.data.Options()
+  options.experimental_threading.private_threadpool_size = 48
+  options.experimental_threading.max_intra_op_parallelism = 1
+
+  train_dataset = train_dataset.with_options(options)
+  train_dataset = train_dataset.map(
+    extract_features_smth_smth,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  valid_dataset = valid_dataset.with_options(options)
+  valid_dataset = valid_dataset.map(
+    extract_features_smth_smth,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  itrs = [
+    get_iterator(train_dataset, batch_size, True),
+    get_iterator(valid_dataset, batch_size, True),
+  ]
+  return itrs
+
+
+def load_dataset_something_something_dvd_subgoal(batch_size):
+  """Load something_something dataset."""
+
+  def extract_features_smth_smth(features):
+    dtype = tf.float32
+    current_frame = features['current_frame']
+    goal_frame = features['goal_frame']
+    label = features['label']
+    subgoal_frame = features['subgoal_frame']
+    video = tf.stack([current_frame, goal_frame, subgoal_frame])
+    actions = tf.expand_dims(label, axis=0)
+    video = tf.cast(video, dtype)
+    actions = tf.cast(actions, dtype)
+    return {
+        'video': tf.identity(video),
+        'actions': tf.identity(actions),
+    }
+
+  dataset_builder = tfds.builder('something_something_DVD_subgoal')
+  dataset_builder.download_and_prepare()
+  train_dataset = dataset_builder.as_dataset(split='train')
+  valid_dataset = dataset_builder.as_dataset(split='valid')
+
+  # set options and extract features
+  options = tf.data.Options()
+  options.experimental_threading.private_threadpool_size = 48
+  options.experimental_threading.max_intra_op_parallelism = 1
+
+  train_dataset = train_dataset.with_options(options)
+  train_dataset = train_dataset.map(
+    extract_features_smth_smth,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  valid_dataset = valid_dataset.with_options(options)
+  valid_dataset = valid_dataset.map(
+    extract_features_smth_smth,
+    num_parallel_calls=tf.data.experimental.AUTOTUNE)
+
+  itrs = [
+    get_iterator(train_dataset, batch_size, True),
+    get_iterator(valid_dataset, batch_size, True),
   ]
   return itrs
