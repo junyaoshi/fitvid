@@ -15,9 +15,13 @@
 """Metrics."""
 
 import numpy as np
-import tensorflow.compat.v2 as tf
+import tensorflow as tf
 import tensorflow_gan as tfgan
 import tensorflow_hub as hub
+import fid
+import lpips
+import torch
+from torchvision import transforms
 
 
 i3d_model = None
@@ -28,18 +32,49 @@ def flatten_video(video):
   return np.reshape(video, (-1,) + video.shape[2:])
 
 
-def psnr(video_1, video_2):
-  video_1 = flatten_video(video_1)
-  video_2 = flatten_video(video_2)
-  dist = tf.image.psnr(video_1, video_2, max_val=1.0)
-  return np.mean(dist.numpy())
+def psnr(video_1, video_2, sample_size=100, topk=10):
+  """
+  Returns:
+    Single sample mode:
+      PSNR, None
+    Else:
+      the max PSNR among samples, indices of samples corresponding to top k PSNR
+  """
+  if sample_size == 1:
+    video_1 = flatten_video(video_1)
+    video_2 = flatten_video(video_2)
+    dist = tf.image.psnr(video_1, video_2, max_val=1.0)
+    return tf.reduce_mean(dist), None
+  else:
+    dist = tf.squeeze(tf.image.psnr(video_1, video_2, max_val=1.0))
+    # topk_inds: (bsize, topk)
+    topk_inds = tf.math.top_k(tf.transpose(dist, [1, 0]), topk).indices
+    # vectors: (topk*bsize)
+    batch_size = video_1.shape[1]
+    batch_vector = tf.repeat(tf.range(batch_size), [topk])
+    topk_vector = tf.reshape(topk_inds, [-1])
+    # topk_inds: (topk*bsize, 2)
+    topk_inds = tf.stack([topk_vector, batch_vector], axis=1)
+    return tf.reduce_mean(tf.reduce_max(dist, axis=0)).numpy(), topk_inds
 
 
-def ssim(video_1, video_2):
-  video_1 = flatten_video(video_1)
-  video_2 = flatten_video(video_2)
-  dist = tf.image.ssim(video_1, video_2, max_val=1.0)
-  return np.mean(dist.numpy())
+def ssim(video_1, video_2, sample_size=100, topk=10):
+  if sample_size == 1:
+    video_1 = flatten_video(video_1)
+    video_2 = flatten_video(video_2)
+    dist = tf.image.ssim(video_1, video_2, max_val=1.0)
+    return np.mean(dist.numpy())
+  else:
+    dist = tf.squeeze(tf.image.ssim(video_1, video_2, max_val=1.0))
+    # topk_inds: (bsize, topk)
+    topk_inds = tf.math.top_k(tf.transpose(dist, [1, 0]), topk).indices
+    # vectors: (topk*bsize)
+    batch_size = video_1.shape[1]
+    batch_vector = tf.repeat(tf.range(batch_size), [topk])
+    topk_vector = tf.reshape(topk_inds, [-1])
+    # topk_inds: (topk*bsize, 2)
+    topk_inds = tf.stack([topk_vector, batch_vector], axis=1)
+    return tf.reduce_mean(tf.reduce_max(dist, axis=0)).numpy(), topk_inds
 
 
 def psnr_image(target_image, out_image):
@@ -59,11 +94,11 @@ def lpips_image(generated_image, real_image):
   return result
 
 
-def lpips(video_1, video_2):
-  video_1 = flatten_video(video_1)
-  video_2 = flatten_video(video_2)
-  dist = lpips_image(video_1, video_2)
-  return np.mean(dist.numpy())
+# def lpips(video_1, video_2):
+#   video_1 = flatten_video(video_1)
+#   video_2 = flatten_video(video_2)
+#   dist = lpips_image(video_1, video_2)
+#   return np.mean(dist.numpy())
 
 
 def fvd_preprocess(videos, target_resolution):
@@ -108,3 +143,60 @@ def fvd(video_1, video_2):
 def inception_score(images):
   return tfgan.eval.inception_score(images)
 
+
+def calculate_fid(image_1, image_2):
+  """
+  image_1, image_2: (B, L, H, W, C)
+  """
+  # convert to 0 to 255
+  image_1 = tf.cast(image_1 * 255, dtype=tf.uint8).numpy()
+  image_2 = tf.cast(image_2 * 255, dtype=tf.uint8).numpy()
+
+  # change shape to [N, 3, HEIGHT, WIDTH]
+  image_1, image_2 = image_1[:, 0], image_2[:, 0]
+  N, H, W, C = image_1.shape
+  image_1, image_2 = np.reshape(image_1, [N, C, H, W]), np.reshape(image_2, [N, C, H, W])
+
+  return fid.get_fid(image_1, image_2).numpy()
+
+
+def calculate_lpips(video_1, video_2, sample_size=100, topk=10):
+  """
+  video_1, video_2: (sample, B, L, H, W, C)
+  """
+  video_1, video_2 = video_1[:, :, 0], video_2[:, :, 0]  # (sample, B, H, W, C)
+  S, B, H, W, C = video_1.shape
+  # reshape to N, 3, H, W
+  video_1, video_2 = tf.reshape(video_1, [S * B, C, H, W]), tf.reshape(video_2, [S * B, C, H, W])
+  video_1, video_2 = torch.from_numpy(video_1.numpy()), torch.from_numpy(video_2.numpy())
+  # normalize to (-1, 1)
+  video_1 = transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])(video_1)
+  video_2 = transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])(video_2)
+  loss_fn_alex = lpips.LPIPS(net='alex')
+  if sample_size == 1:
+    raise NotImplementedError
+  else:
+    dist = loss_fn_alex(video_1, video_2).squeeze().detach().numpy()
+    dist = tf.convert_to_tensor(dist)
+    dist = tf.reshape(dist, [sample_size, B])
+    # topk_inds: (bsize, topk)
+    topk_inds = tf.math.top_k(tf.transpose(dist, [1, 0]), topk).indices
+    # vectors: (topk*bsize)
+    batch_vector = tf.repeat(tf.range(B), [topk])
+    topk_vector = tf.reshape(topk_inds, [-1])
+    # topk_inds: (topk*bsize, 2)
+    topk_inds = tf.stack([topk_vector, batch_vector], axis=1)
+    return tf.reduce_mean(tf.reduce_max(dist, axis=0)).numpy(), topk_inds
+
+
+if __name__ == '__main__':
+  gt = tf.random.uniform((8, 1, 64, 64, 3))
+  out = tf.random.uniform((8, 1, 64, 64, 3))
+  gt_repeat = tf.repeat(gt, 9, axis=1)
+  out_repeat = tf.repeat(out, 9, axis=1)
+  gt_samples = tf.random.uniform((5, 8, 1, 64, 64, 3))
+  out_samples = tf.random.uniform((5, 8, 1, 64, 64, 3))
+  lpips_score, _ = calculate_lpips(gt_samples, out_samples, sample_size=5, topk=3)
+  fvd_score = fvd(gt_repeat, out_repeat)
+  fid_score = calculate_fid(gt, out)
+  print(f'fvd score: {fvd_score} | fid score: {fid_score} | lpips score: {lpips_score}')
