@@ -8,9 +8,9 @@ import multiprocessing as mp
 import math
 from tqdm import tqdm
 import resource
+
 low, high = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (high, high))
-
 
 
 def join(path1, path2):
@@ -76,9 +76,9 @@ def convert_videos_to_images():
     num_cpus = mp.cpu_count()
 
     # split into multiple jobs
-    splits = list(range(0, num_videos, math.ceil(num_videos/num_cpus)))
+    splits = list(range(0, num_videos, math.ceil(num_videos / num_cpus)))
     splits.append(num_videos)
-    args_list = [all_video_names[splits[i]:splits[i+1]] for i in range(len(splits) - 1)]
+    args_list = [all_video_names[splits[i]:splits[i + 1]] for i in range(len(splits) - 1)]
 
     # multiprocessing (num_cpus processes)
     pool = mp.Pool(num_cpus)
@@ -87,58 +87,58 @@ def convert_videos_to_images():
 
 
 class SomethingSomething(tfds.core.GeneratorBasedBuilder):
-  """DatasetBuilder for something_something dataset."""
+    """DatasetBuilder for something_something dataset."""
 
-  VERSION = tfds.core.Version('1.0.0')
-  RELEASE_NOTES = {
-      '1.0.0': 'Initial release.',
-  }
-
-  def _info(self) -> tfds.core.DatasetInfo:
-    """Returns the dataset metadata."""
-    return tfds.core.DatasetInfo(
-        builder=self,
-        description=_DESCRIPTION,
-        features=tfds.features.FeaturesDict({
-            # These are the features of your dataset like images, labels ...
-            'first_frame': tfds.features.Image(shape=(64, 64, 3)),
-            'last_frame': tfds.features.Image(shape=(64, 64, 3)),
-        }),
-        # If there's a common (input, target) tuple from the
-        # features, specify them here. They'll be used if
-        # `as_supervised=True` in `builder.as_dataset`.
-        supervised_keys=('first_frame', 'last_frame'),  # Set to `None` to disable
-        homepage='https://20bn.com/datasets/something-something',
-        disable_shuffling=False,
-        citation=_CITATION,
-    )
-
-  def _split_generators(self, dl_manager: tfds.download.DownloadManager):
-    """Returns SplitGenerators."""
-    convert_videos_to_images()
-    videos = tf.io.gfile.listdir(join(_DATA_DIR, 'something_something'))
-    train_list = json.load(tf.io.gfile.GFile(join(_DATA_DIR, 'something-something-v2-train.json')))
-    train_videos = [d["id"] + '.webm' for d in train_list]
-    valid_videos = list(set(videos) - set(train_videos))
-    train_ids = [int(vid_name[:-5]) for vid_name in train_videos]
-    valid_ids = [int(vid_name[:-5]) for vid_name in valid_videos]
-
-    return {
-        'train': self._generate_examples(train_ids),
-        'valid': self._generate_examples(valid_ids)
+    VERSION = tfds.core.Version('1.0.0')
+    RELEASE_NOTES = {
+        '1.0.0': 'Initial release.',
     }
 
-  def _generate_examples(self, ids):
-    """Yields examples."""
-    for id in ids:
-        first_frame = cv2.imread(join(_IMAGE_DIR, f'{id}_first.jpg'))
-        first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
-        last_frame = cv2.imread(join(_IMAGE_DIR, f'{id}_last.jpg'))
-        last_frame = cv2.cvtColor(last_frame, cv2.COLOR_BGR2RGB)
-        yield id, {
-            'first_frame': first_frame,
-            'last_frame': last_frame,
+    def _info(self) -> tfds.core.DatasetInfo:
+        """Returns the dataset metadata."""
+        return tfds.core.DatasetInfo(
+            builder=self,
+            description=_DESCRIPTION,
+            features=tfds.features.FeaturesDict({
+                # These are the features of your dataset like images, labels ...
+                'first_frame': tfds.features.Image(shape=(64, 64, 3)),
+                'last_frame': tfds.features.Image(shape=(64, 64, 3)),
+            }),
+            # If there's a common (input, target) tuple from the
+            # features, specify them here. They'll be used if
+            # `as_supervised=True` in `builder.as_dataset`.
+            supervised_keys=('first_frame', 'last_frame'),  # Set to `None` to disable
+            homepage='https://20bn.com/datasets/something-something',
+            disable_shuffling=False,
+            citation=_CITATION,
+        )
+
+    def _split_generators(self, dl_manager: tfds.download.DownloadManager):
+        """Returns SplitGenerators."""
+        convert_videos_to_images()
+        videos = tf.io.gfile.listdir(join(_DATA_DIR, 'something_something'))
+        train_list = json.load(tf.io.gfile.GFile(join(_DATA_DIR, 'something-something-v2-train.json')))
+        train_videos = [d["id"] + '.webm' for d in train_list]
+        valid_videos = list(set(videos) - set(train_videos))
+        train_ids = [int(vid_name[:-5]) for vid_name in train_videos]
+        valid_ids = [int(vid_name[:-5]) for vid_name in valid_videos]
+
+        return {
+            'train': self._generate_examples(train_ids),
+            'valid': self._generate_examples(valid_ids)
         }
+
+    def _generate_examples(self, ids):
+        """Yields examples."""
+        for id in ids:
+            first_frame = cv2.imread(join(_IMAGE_DIR, f'{id}_first.jpg'))
+            first_frame = cv2.cvtColor(first_frame, cv2.COLOR_BGR2RGB)
+            last_frame = cv2.imread(join(_IMAGE_DIR, f'{id}_last.jpg'))
+            last_frame = cv2.cvtColor(last_frame, cv2.COLOR_BGR2RGB)
+            yield id, {
+                'first_frame': first_frame,
+                'last_frame': last_frame,
+            }
 
 
 # debugging
