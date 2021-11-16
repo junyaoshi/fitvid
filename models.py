@@ -19,7 +19,7 @@
 import functools
 
 from flax import linen as nn
-from flax.nn import initializers
+from flax.linen import initializers
 import jax
 import jax.numpy as jnp
 
