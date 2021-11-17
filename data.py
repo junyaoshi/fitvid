@@ -40,6 +40,28 @@ def rand_crop(seeds, video, width, height, wiggle):
   return video[:, xx:xx+crop_width, yy:yy+crop_width, :]
 
 
+def rand_crop_fitvid(seeds, video, width, height, min_height_ratio):
+  """Random crop of a video. As described in the fitvid paper
+  Args:
+    width: width of video before cropping
+    height: height of video before cropping
+    min_height_ratio: Crop height minimum ratio C in the paper
+  """
+  min_height = int(min_height_ratio * height)
+  crop_width = tf.random.stateless_uniform(
+    [], seed=seeds[2], minval=min_height, maxval=height, dtype=tf.int32
+  )
+  xx_max = height - crop_width
+  yy_max = width - crop_width
+  xx = tf.random.stateless_uniform(
+      [], seed=seeds[0], minval=0, maxval=xx_max, dtype=tf.int32
+  )
+  yy = tf.random.stateless_uniform(
+      [], seed=seeds[1], minval=0, maxval=yy_max, dtype=tf.int32
+  )
+  return video[:, xx:xx+crop_width, yy:yy+crop_width, :]
+
+
 def rand_aug(seeds, video, num_layers, magnitude):
   """RandAug for video with the same random seed for all frames."""
   image_aug = lambda a, x: randaugment(x, num_layers, magnitude, seeds)
@@ -56,7 +78,8 @@ def augment_dataset(dataset, augmentations):
     features['video'] = video
     return features
 
-  randds = tf.data.experimental.RandomDataset(1).batch(2).batch(4)
+  # randds = tf.data.experimental.RandomDataset(1).batch(2).batch(4)
+  randds = tf.data.Dataset.random(1).batch(2).batch(4)
   dataset = tf.data.Dataset.zip((randds, dataset))
   dataset = dataset.map(
       augment, num_parallel_calls=tf.data.experimental.AUTOTUNE)
@@ -72,8 +95,10 @@ def get_iterator(dataset, batch_size, is_train):
   """"Returns a performance optimized iterator from dataset."""
   local_device_count = jax.local_device_count()
   options = tf.data.Options()
-  options.experimental_threading.private_threadpool_size = 48
-  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.experimental_threading.private_threadpool_size = 48
+  # options.experimental_threading.max_intra_op_parallelism = 1
+  options.threading.private_threadpool_size = 48
+  options.threading.max_intra_op_parallelism = 1
   dataset = dataset.with_options(options)
   dataset = dataset.map(normalize_video)
   dataset = dataset.repeat()
@@ -128,8 +153,10 @@ def load_dataset_robonet(batch_size, video_len, is_train):
   split = 'train[{}:{}]'.format(start, start + split_size)
   dataset = dataset_builder.as_dataset(split=split)
   options = tf.data.Options()
-  options.experimental_threading.private_threadpool_size = 48
-  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.experimental_threading.private_threadpool_size = 48
+  # options.experimental_threading.max_intra_op_parallelism = 1
+  options.threading.private_threadpool_size = 48
+  options.threading.max_intra_op_parallelism = 1
   dataset = dataset.with_options(options)
 
   test_filenames = get_robonet_test_filenames()
@@ -170,8 +197,10 @@ def load_dataset_robonet_sample(batch_size, video_len):
 
   # set options and extract features
   options = tf.data.Options()
-  options.experimental_threading.private_threadpool_size = 48
-  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.experimental_threading.private_threadpool_size = 48
+  # options.experimental_threading.max_intra_op_parallelism = 1
+  options.threading.private_threadpool_size = 48
+  options.threading.max_intra_op_parallelism = 1
 
   train_dataset = train_dataset.with_options(options)
   train_dataset = train_dataset.map(
@@ -196,7 +225,7 @@ def load_dataset_robonet_sample(batch_size, video_len):
   return itrs
 
 
-def load_dataset_something_something(batch_size, video_len):
+def load_dataset_something_something(batch_size, video_len, augment_train_data=True):
   """Load something_something dataset."""
 
   def extract_features_smth_smth(features):
@@ -219,13 +248,23 @@ def load_dataset_something_something(batch_size, video_len):
 
   # set options and extract features
   options = tf.data.Options()
-  options.experimental_threading.private_threadpool_size = 48
-  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.experimental_threading.private_threadpool_size = 48
+  # options.experimental_threading.max_intra_op_parallelism = 1
+  options.threading.private_threadpool_size = 48
+  options.threading.max_intra_op_parallelism = 1
 
   train_dataset = train_dataset.with_options(options)
   train_dataset = train_dataset.map(
     extract_features_smth_smth,
     num_parallel_calls=tf.data.experimental.AUTOTUNE)
+  if augment_train_data:
+    rand_crop_func = functools.partial(
+      rand_crop_fitvid, width=64, height=64, min_height_ratio=0.8
+    )
+    rand_aug_func = functools.partial(
+      rand_aug, num_layers=1, magnitude=5
+    )
+    train_dataset = augment_dataset(train_dataset, [rand_crop_func, rand_aug_func])
 
   valid_dataset = valid_dataset.with_options(options)
   valid_dataset = valid_dataset.map(
@@ -239,7 +278,7 @@ def load_dataset_something_something(batch_size, video_len):
   return itrs
 
 
-def load_dataset_something_something_dvd(batch_size):
+def load_dataset_something_something_dvd(batch_size, augment_train_data=True):
   """Load something_something dataset."""
 
   def extract_features_smth_smth(features):
@@ -263,13 +302,23 @@ def load_dataset_something_something_dvd(batch_size):
 
   # set options and extract features
   options = tf.data.Options()
-  options.experimental_threading.private_threadpool_size = 48
-  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.experimental_threading.private_threadpool_size = 48
+  # options.experimental_threading.max_intra_op_parallelism = 1
+  options.threading.private_threadpool_size = 48
+  options.threading.max_intra_op_parallelism = 1
 
   train_dataset = train_dataset.with_options(options)
   train_dataset = train_dataset.map(
     extract_features_smth_smth,
     num_parallel_calls=tf.data.experimental.AUTOTUNE)
+  if augment_train_data:
+    rand_crop_func = functools.partial(
+      rand_crop_fitvid, width=64, height=64, min_height_ratio=0.8
+    )
+    rand_aug_func = functools.partial(
+      rand_aug, num_layers=1, magnitude=5
+    )
+    train_dataset = augment_dataset(train_dataset, [rand_crop_func, rand_aug_func])
 
   valid_dataset = valid_dataset.with_options(options)
   valid_dataset = valid_dataset.map(
@@ -283,7 +332,7 @@ def load_dataset_something_something_dvd(batch_size):
   return itrs
 
 
-def load_dataset_something_something_dvd_subgoal(batch_size):
+def load_dataset_something_something_dvd_subgoal(batch_size, augment_train_data=True):
   """Load something_something dataset."""
 
   def extract_features_smth_smth(features):
@@ -308,13 +357,23 @@ def load_dataset_something_something_dvd_subgoal(batch_size):
 
   # set options and extract features
   options = tf.data.Options()
-  options.experimental_threading.private_threadpool_size = 48
-  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.experimental_threading.private_threadpool_size = 48
+  # options.experimental_threading.max_intra_op_parallelism = 1
+  options.threading.private_threadpool_size = 48
+  options.threading.max_intra_op_parallelism = 1
 
   train_dataset = train_dataset.with_options(options)
   train_dataset = train_dataset.map(
     extract_features_smth_smth,
     num_parallel_calls=tf.data.experimental.AUTOTUNE)
+  if augment_train_data:
+    rand_crop_func = functools.partial(
+      rand_crop_fitvid, width=64, height=64, min_height_ratio=0.8
+    )
+    rand_aug_func = functools.partial(
+      rand_aug, num_layers=1, magnitude=5
+    )
+    train_dataset = augment_dataset(train_dataset, [rand_crop_func, rand_aug_func])
 
   valid_dataset = valid_dataset.with_options(options)
   valid_dataset = valid_dataset.map(
@@ -326,3 +385,32 @@ def load_dataset_something_something_dvd_subgoal(batch_size):
     get_iterator(valid_dataset, batch_size, True),
   ]
   return itrs
+
+
+if __name__ == '__main__':
+  # test random crop
+  video = tf.cast(
+    tf.random.uniform(shape=(2, 64, 64, 3), minval=0, maxval=255, dtype=tf.int32),
+    dtype=tf.uint8
+  )
+  seeds = [[random.randint(0, 100), random.randint(0, 100)] for _ in range(4)]
+  rand_crop_fitvid_func = functools.partial(
+    rand_crop_fitvid, width=64, height=64, min_height_ratio=0.8
+  )
+  video_cropped = rand_crop_fitvid_func(seeds, video)
+  print(f'Cropped video shape: {video_cropped.shape}')
+
+  # test resize
+  video_resized = tf.image.resize(video_cropped, (64, 64))
+  print(f'Resized video shape: {video_resized.shape}')
+
+  # test random augment
+  rand_aug_func = functools.partial(
+    rand_aug, num_layers=1, magnitude=5
+  )
+  video_augmented = rand_aug_func(seeds, video)
+  print(f'Cropped video shape: {video_augmented.shape}')
+
+  # test resize
+  video_resized = tf.image.resize(video_augmented, (64, 64))
+  print(f'Resized video shape: {video_resized.shape}')
