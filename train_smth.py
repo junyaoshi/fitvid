@@ -56,7 +56,7 @@ from tqdm import trange, tqdm
 FLAGS = flags.FLAGS
 
 # flags.DEFINE_string('output_dir', None, 'Path to model checkpoints/summaries.')
-flags.DEFINE_string('datetime', '000000000000', 'YYYYMMDDHHMM')
+flags.DEFINE_string('datetime', None, 'YYYYMMDDHHMM')
 flags.DEFINE_integer('batch_size', 128, 'Batch size.')
 flags.DEFINE_integer('n_past', 2, 'Number of past frames.')
 flags.DEFINE_integer('n_future', 10, 'Number of future frames.')
@@ -67,6 +67,7 @@ flags.DEFINE_integer('topk', 10, 'Top K samples will be logged to tensorboard')
 flags.DEFINE_integer('fps', 5, 'FPS for gif logged to tensorboard')
 flags.DEFINE_integer('log_n_per_batch', 10, 'log n out of batch_size of each batch')
 flags.DEFINE_string('dataset', 'smth', 'smth or smth_dvd or smth_dvd_subgoal')
+flags.DEFINE_boolean('aug', True, 'whether or not to augment the training dataset')
 
 
 MODEL_CLS = models.FitVid
@@ -276,7 +277,7 @@ def train_step(model, batch, state, rng):
 def get_log_directories():
   output_dir = f'output/{FLAGS.dataset}_batch={FLAGS.batch_size}_steps={FLAGS.training_steps}' \
                f'_log={FLAGS.log_every}_sample={FLAGS.sample_size}' \
-               f'_topk={FLAGS.topk}_fps={FLAGS.fps}' \
+               f'_topk={FLAGS.topk}_fps={FLAGS.fps}_aug={FLAGS.aug}' \
                f'_time={FLAGS.datetime}'
   model_dir = os.path.join(output_dir, 'model')
   train_log_dir = os.path.join(output_dir, 'train')
@@ -288,15 +289,16 @@ def get_log_directories():
   return model_dir, train_summary_writer, valid_summary_writer, fixed_summary_writer
 
 
-def get_data(dataset):
+def get_data(dataset, augment_train_data=True):
   video_len = FLAGS.n_past + FLAGS.n_future
-  local_batch_size = FLAGS.batch_size // jax.host_count()
+  # local_batch_size = FLAGS.batch_size // jax.host_count()
+  local_batch_size = FLAGS.batch_size // jax.process_count()
   if dataset == 'smth':
-    return data.load_dataset_something_something(local_batch_size, video_len)
+    return data.load_dataset_something_something(local_batch_size, video_len, augment_train_data)
   elif dataset == 'smth_dvd':
-    return data.load_dataset_something_something_dvd(local_batch_size)
+    return data.load_dataset_something_something_dvd(local_batch_size, augment_train_data)
   elif dataset == 'smth_dvd_subgoal':
-    return data.load_dataset_something_something_dvd_subgoal(local_batch_size)
+    return data.load_dataset_something_something_dvd_subgoal(local_batch_size, augment_train_data)
   else:
     raise ValueError(f'Unrecognized dataset name: {dataset}')
 
@@ -354,6 +356,7 @@ def train():
   log_n_per_batch = FLAGS.log_n_per_batch
   batch_size = FLAGS.batch_size
   dataset = FLAGS.dataset
+  augment_train_data = FLAGS.aug
 
   assert dataset == 'smth' or dataset == 'smth_dvd' or dataset == 'smth_dvd_subgoal'
   if dataset == 'smth' or dataset == 'smth_dvd':
@@ -367,7 +370,7 @@ def train():
 
   rng_key = jax.random.PRNGKey(0)
   model_dir, train_summary_writer, valid_summary_writer, fixed_summary_writer = get_log_directories()
-  train_itr, valid_itr = get_data(dataset=dataset)
+  train_itr, valid_itr = get_data(dataset=dataset, augment_train_data=augment_train_data)
 
   train_batch = next(train_itr)
   sample = utils.get_first_device(train_batch)
