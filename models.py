@@ -117,59 +117,103 @@ class FitVid(nn.Module):
     # Keep the last available skip only
     skips = {k: skips[k][:, self.n_past-1] for k in skips.keys()}
 
-    kld, means, logvars = 0.0, [], []
-    if self.training:
-      h_preds = []
-      for i in range(1, video_len):
-        h, h_target = hidden[:, i-1], hidden[:, i]
-        post_s, (z_t, mu, logvar) = self.posterior(h_target, post_s)
-        prior_s, (_, prior_mu, prior_logvar) = self.prior(h, prior_s)
+    kld, post_means, post_logvars, prior_means, prior_logvars = 0.0, [], [], [], []
 
-        inp = self.get_input(h, actions[:, i-1], z_t)
-        pred_s, (_, h_pred, _) = self.frame_predictor(inp, pred_s)
-        h_pred = nn.sigmoid(h_pred)
-        h_preds.append(h_pred)
-        means.append(mu)
-        logvars.append(logvar)
-        kld += kl(mu, logvar, prior_mu, prior_logvar)
+    # if self.training:
+    prior_preds, prior_x_pred = [], None
+    post_h_preds = []
+    for i in range(1, video_len):
+      prior_h, prior_h_target = hidden[:, i-1], hidden[:, i]
+      post_h, post_h_target = hidden[:, i-1], hidden[:, i]
+      if i > self.n_past:
+        prior_h = self.encoder(jnp.expand_dims(prior_x_pred, 1))[0][:, 0]
+      post_s, (post_z_t, post_mu, post_logvar) = self.posterior(post_h_target, post_s)
+      prior_s, (prior_z_t, prior_mu, prior_logvar) = self.prior(prior_h, prior_s)
 
-      h_preds = jnp.stack(h_preds, axis=1)
-      preds = self.decoder(h_preds, skips)
+      # forward prior
+      prior_inp = self.get_input(prior_h, actions[:, i-1], prior_z_t)
+      prior_pred_s, (_, prior_h_pred, _) = self.frame_predictor(prior_inp, pred_s)
+      prior_h_pred = nn.sigmoid(prior_h_pred)
+      prior_x_pred = self.decoder(jnp.expand_dims(prior_h_pred, 1), skips)[:, 0]
+      prior_preds.append(prior_x_pred)
+      prior_means.append(prior_mu)
+      prior_logvars.append(prior_logvar)
 
-    else:  # eval
-      preds, x_pred = [], None
-      for i in range(1, video_len):
-        h, h_target = hidden[:, i-1], hidden[:, i]
-        if i > self.n_past:
-          h = self.encoder(jnp.expand_dims(x_pred, 1))[0][:, 0]
+      # forward posterior
+      post_inp = self.get_input(post_h, actions[:, i - 1], post_z_t)
+      post_pred_s, (_, post_h_pred, _) = self.frame_predictor(post_inp, pred_s)
+      post_h_pred = nn.sigmoid(post_h_pred)
+      post_h_preds.append(post_h_pred)
+      post_means.append(post_mu)
+      post_logvars.append(post_logvar)
 
-        post_s, (_, mu, logvar) = self.posterior(h_target, post_s)
-        prior_s, (z_t, prior_mu, prior_logvar) = self.prior(h, prior_s)
+      # KL divergence
+      kld += kl(post_mu, post_logvar, prior_mu, prior_logvar)
 
-        inp = self.get_input(h, actions[:, i-1], z_t)
-        pred_s, (_, h_pred, _) = self.frame_predictor(inp, pred_s)
-        h_pred = nn.sigmoid(h_pred)
-        x_pred = self.decoder(jnp.expand_dims(h_pred, 1), skips)[:, 0]
-        preds.append(x_pred)
-        means.append(mu)
-        logvars.append(logvar)
-        kld += kl(mu, logvar, prior_mu, prior_logvar)
+    # prior predictions
+    prior_preds = jnp.stack(prior_preds, axis=1)
 
-      preds = jnp.stack(preds, axis=1)
+    # posterior predictions
+    post_h_preds = jnp.stack(post_h_preds, axis=1)
+    post_preds = self.decoder(post_h_preds, skips)
 
-    means = jnp.stack(means, axis=1)
-    logvars = jnp.stack(logvars, axis=1)
-    mse = utils.l2_loss(preds, video[:, 1:])
-    loss = mse + kld * self.beta
+    # else:  # eval
+    #   preds, x_pred = [], None
+    #   for i in range(1, video_len):
+    #     h, h_target = hidden[:, i-1], hidden[:, i]
+    #     if i > self.n_past:
+    #       h = self.encoder(jnp.expand_dims(x_pred, 1))[0][:, 0]
+    #
+    #     post_s, (_, mu, logvar) = self.posterior(h_target, post_s)
+    #     prior_s, (z_t, prior_mu, prior_logvar) = self.prior(h, prior_s)
+    #
+    #     # forward prior
+    #     inp = self.get_input(h, actions[:, i-1], z_t)
+    #     pred_s, (_, h_pred, _) = self.frame_predictor(inp, pred_s)
+    #     h_pred = nn.sigmoid(h_pred)
+    #     x_pred = self.decoder(jnp.expand_dims(h_pred, 1), skips)[:, 0]
+    #     preds.append(x_pred)
+    #     prior_means.append(prior_mu)
+    #     prior_logvars.append(prior_logvar)
+    #
+    #     # forward posterior
+    #     post_means.append(mu)
+    #     post_logvars.append(logvar)
+    #
+    #     # KL divergence
+    #     kld += kl(mu, logvar, prior_mu, prior_logvar)
+    #
+    #   prior_preds = jnp.stack(preds, axis=1)
+    #   post_preds = jnp.zeros_like(prior_preds)  # doesn't matter, not using posterior for eval mode
+
+    post_means = jnp.stack(post_means, axis=1)
+    post_logvars = jnp.stack(post_logvars, axis=1)
+    prior_mse = utils.l2_loss(prior_preds, video[:, 1:])
+    prior_loss = prior_mse + kld * self.beta
+
+    # if self.training:
+    post_mse = utils.l2_loss(post_preds, video[:, 1:])
+    post_loss = post_mse + kld * self.beta
+    # else:
+    #   # doesn't matter for eval mode, not using any posterior
+    #   post_mse = 0
+    #   post_loss = 0
+
 
     # Metrics
     metrics = {
-        'hist/mean': means,
-        'hist/logvars': logvars,
-        'loss/mse': mse,
-        'loss/kld': kld,
-        'loss/all': loss,
+      'hist/post_mean': post_means,
+      'hist/post_logvars': post_logvars,
+      'hist/prior_mean': prior_means,
+      'hist/prior_logvars': prior_logvars,
+      'loss/prior_mse': prior_mse,
+      'loss/kld': kld,
+      'loss/prior_all': prior_loss,
     }
 
-    return loss, preds, metrics
+    # if self.training:
+    metrics['loss/post_mse'] = post_mse
+    metrics['loss/post_all'] = post_loss
 
+    loss = post_loss if self.training else prior_loss
+    return loss, prior_preds, post_preds, metrics
