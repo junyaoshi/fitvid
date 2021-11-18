@@ -78,8 +78,8 @@ def augment_dataset(dataset, augmentations):
     features['video'] = video
     return features
 
-  # randds = tf.data.experimental.RandomDataset(1).batch(2).batch(4)
-  randds = tf.data.Dataset.random(1).batch(2).batch(4)
+  randds = tf.data.experimental.RandomDataset(1).batch(2).batch(4)
+  # randds = tf.data.Dataset.random(1).batch(2).batch(4)
   dataset = tf.data.Dataset.zip((randds, dataset))
   dataset = dataset.map(
       augment, num_parallel_calls=tf.data.experimental.AUTOTUNE)
@@ -95,10 +95,10 @@ def get_iterator(dataset, batch_size, is_train):
   """"Returns a performance optimized iterator from dataset."""
   local_device_count = jax.local_device_count()
   options = tf.data.Options()
-  # options.experimental_threading.private_threadpool_size = 48
-  # options.experimental_threading.max_intra_op_parallelism = 1
-  options.threading.private_threadpool_size = 48
-  options.threading.max_intra_op_parallelism = 1
+  options.experimental_threading.private_threadpool_size = 48
+  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.threading.private_threadpool_size = 48
+  # options.threading.max_intra_op_parallelism = 1
   dataset = dataset.with_options(options)
   dataset = dataset.map(normalize_video)
   dataset = dataset.repeat()
@@ -342,7 +342,8 @@ def load_dataset_something_something_dvd_subgoal(batch_size, augment_train_data=
     label = features['label']
     subgoal_frame = features['subgoal_frame']
     video = tf.stack([current_frame, goal_frame, subgoal_frame])
-    actions = tf.expand_dims(label, axis=0)
+    video_len = video.shape[0]
+    actions = tf.repeat(tf.expand_dims(label, axis=0), video_len, axis=0)
     video = tf.cast(video, dtype)
     actions = tf.cast(actions, dtype)
     return {
@@ -357,10 +358,10 @@ def load_dataset_something_something_dvd_subgoal(batch_size, augment_train_data=
 
   # set options and extract features
   options = tf.data.Options()
-  # options.experimental_threading.private_threadpool_size = 48
-  # options.experimental_threading.max_intra_op_parallelism = 1
-  options.threading.private_threadpool_size = 48
-  options.threading.max_intra_op_parallelism = 1
+  options.experimental_threading.private_threadpool_size = 48
+  options.experimental_threading.max_intra_op_parallelism = 1
+  # options.threading.private_threadpool_size = 48
+  # options.threading.max_intra_op_parallelism = 1
 
   train_dataset = train_dataset.with_options(options)
   train_dataset = train_dataset.map(
