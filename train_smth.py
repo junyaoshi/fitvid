@@ -44,7 +44,6 @@ from fitvid import data
 from fitvid import models
 from fitvid import utils
 from fitvid.metrics import fvd
-from fitvid.metrics import lpips
 from fitvid.metrics import psnr
 from fitvid.metrics import psnr_per_frame
 from fitvid.metrics import ssim
@@ -67,76 +66,117 @@ flags.DEFINE_integer('topk', 10, 'Top K samples will be logged to tensorboard')
 flags.DEFINE_integer('fps', 5, 'FPS for gif logged to tensorboard')
 flags.DEFINE_integer('log_n_per_batch', 10, 'log n out of batch_size of each batch')
 flags.DEFINE_string('dataset', 'smth', 'smth or smth_dvd or smth_dvd_subgoal')
-flags.DEFINE_boolean('aug', True, 'whether or not to augment the training dataset')
+flags.DEFINE_string('aug', 'True', 'whether or not to augment the training dataset; True or False')
+flags.DEFINE_float('beta', 1.0, 'beta term in the loss function')
 
 
 MODEL_CLS = models.FitVid
 
 
-def additional_metrics(metrics, gt, out_video,
-                       model, state, batch, sample_size=100, topk=10):
+def additional_metrics(metrics, model, state, batch,
+                       gt, prior_out_video=None, post_out_video=None,
+                       sample_size=100, topk=10):
   """
   Return:
-    metrics, topk PSNR
+    metrics, topk videos (topk psnr, ssim, lpips for prior and posterior)
   """
   # gt/out_video: (B, L, H, W, C)
+  B, L, H, W, C = gt.shape
+  topk_prior_psnr = tf.random.uniform(shape=[topk, B, L, H, W, C])
+  topk_prior_ssim = tf.random.uniform(shape=[topk, B, L, H, W, C])
+  topk_prior_lpips = tf.random.uniform(shape=[topk, B, L, H, W, C])
+  topk_post_psnr = tf.random.uniform(shape=[topk, B, L, H, W, C])
+  topk_post_ssim = tf.random.uniform(shape=[topk, B, L, H, W, C])
+  topk_post_lpips = tf.random.uniform(shape=[topk, B, L, H, W, C])
   if sample_size == 1:
-    metrics['metrics/psnr'], _ = psnr(gt, out_video)
-    metrics['metrics/ssim'],  = ssim(gt, out_video)
-    # need to fix nan bug
-    # metrics['metrics/fvd'] = fvd(gt, out_video)
-    B, L, H, W, C = gt.shape
-    topk_psnr_videos = tf.random.uniform(shape=[topk, B, L, H, W, C])
-    topk_ssim_videos = tf.random.uniform(shape=[topk, B, L, H, W, C])
-    topk_lpips_videos = tf.random.uniform(shape=[topk, B, L, H, W, C])
-    # lpips for single sample not implemented yet
-    # metrics['metrics/lpips'] = lpips(gt, out_video, mode)
+    if prior_out_video is not None:
+      metrics['metrics/prior_psnr'], _ = psnr(gt, prior_out_video)
+      metrics['metrics/prior_ssim'],  = ssim(gt, prior_out_video)
+    if post_out_video is not None:
+      metrics['metrics/post_psnr'], _ = psnr(gt, post_out_video)
+      metrics['metrics/post_ssim'],  = ssim(gt, post_out_video)
   else:
     # sample 100 future trajectories per video
     # and pick the best one as the final score (acc. to paper)
-    gt_samples, out_video_samples = [], []
+    gt_samples, prior_out_samples, post_out_samples = [], [], []
     for _ in trange(sample_size, desc='Generating samples for metrics'):
       # generate random rng key for model sampling
       rng = jax.random.PRNGKey(random.randint(0, sample_size * 10))
       rng = jax.random.split(rng, jax.local_device_count())
       output = eval_step(model, batch, state, rng)
-      gt_samples.append(tf.squeeze(output[0], axis=0))
-      out_video_samples.append(tf.squeeze(output[1], axis=0))
+      gt_sample, prior_out, post_out, _ = output
+      gt_samples.append(tf.squeeze(gt_sample, axis=0))
+      prior_out_samples.append(tf.squeeze(prior_out, axis=0))
+      post_out_samples.append(tf.squeeze(post_out, axis=0))
     gt_samples = tf.stack(gt_samples)  # (sample, B, L, H, W, C)
-    out_video_samples = tf.stack(out_video_samples)  # (sample, B, L, H, W, C)
+    prior_out_samples = tf.stack(prior_out_samples)  # (sample, B, L, H, W, C)
+    post_out_samples = tf.stack(post_out_samples)  # (sample, B, L, H, W, C)
 
-    # feed this into the different metrics functions
-    metrics['metrics/psnr'], topk_psnr_inds = psnr(gt_samples, out_video_samples, sample_size, topk)
-    topk_psnr_videos = tf.gather_nd(out_video_samples, topk_psnr_inds)  # (topk*bsize, L, H, W, C)
-    _, L, H, W, C = topk_psnr_videos.shape
-    B = gt_samples.shape[1]
-    topk_psnr_videos = tf.reshape(topk_psnr_videos, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
+    if prior_out_video is not None:
+      # feed this into the different metrics functions
+      metrics['metrics/prior_psnr'], topk_prior_psnr_inds = psnr(gt_samples, prior_out_samples, sample_size, topk)
+      topk_prior_psnr = tf.gather_nd(prior_out_samples, topk_prior_psnr_inds)  # (topk*bsize, L, H, W, C)
+      _, L, H, W, C = topk_prior_psnr.shape
+      B = gt_samples.shape[1]
+      topk_prior_psnr = tf.reshape(topk_prior_psnr, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
 
-    metrics['metrics/ssim'], topk_ssim_inds = ssim(gt_samples, out_video_samples, sample_size, topk)
-    topk_ssim_videos = tf.gather_nd(out_video_samples, topk_ssim_inds)  # (topk*bsize, L, H, W, C)
-    topk_ssim_videos = tf.reshape(topk_ssim_videos, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
+      metrics['metrics/prior_ssim'], topk_prior_ssim_inds = ssim(gt_samples, prior_out_samples, sample_size, topk)
+      topk_prior_ssim = tf.gather_nd(prior_out_samples, topk_prior_ssim_inds)  # (topk*bsize, L, H, W, C)
+      topk_prior_ssim = tf.reshape(topk_prior_ssim, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
 
-    metrics['metrics/lpips'], topk_lpips_inds = calculate_lpips(gt_samples, out_video_samples, sample_size, topk)
-    topk_lpips_videos = tf.gather_nd(out_video_samples, topk_lpips_inds)  # (topk*bsize, L, H, W, C)
-    topk_lpips_videos = tf.reshape(topk_lpips_videos, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
+      metrics['metrics/prior_lpips'], topk_prior_lpips_inds = calculate_lpips(gt_samples, prior_out_samples,
+                                                                              sample_size, topk)
+      topk_prior_lpips = tf.gather_nd(prior_out_samples, topk_prior_lpips_inds)  # (topk*bsize, L, H, W, C)
+      topk_prior_lpips = tf.reshape(topk_prior_lpips, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
 
-    # FVD needs video length >= 9, so repeating the image 9 times
-    gt_repeat = tf.repeat(gt, 9, axis=1)
-    out_video_repeat = tf.repeat(out_video, 9, axis=1)
-    metrics['metrics/fvd'] = fvd(gt_repeat, out_video_repeat)
-    metrics['metrics/fid'] = calculate_fid(gt, out_video)
+      # FVD needs video length >= 9, so repeating the image 9 times
+      gt_repeat = tf.repeat(gt, 9, axis=1)
+      prior_out_repeat = tf.repeat(prior_out_video, 9, axis=1)
+      metrics['metrics/prior_fvd'] = fvd(gt_repeat, prior_out_repeat)
+      metrics['metrics/prior_fid'] = calculate_fid(gt, prior_out_video)
 
-  return metrics, topk_psnr_videos, topk_ssim_videos, topk_lpips_videos
+    if post_out_video is not None:
+      # feed this into the different metrics functions
+      metrics['metrics/post_psnr'], topk_post_psnr_inds = psnr(gt_samples, post_out_samples, sample_size, topk)
+      topk_post_psnr = tf.gather_nd(post_out_samples, topk_post_psnr_inds)  # (topk*bsize, L, H, W, C)
+      _, L, H, W, C = topk_post_psnr.shape
+      B = gt_samples.shape[1]
+      topk_post_psnr = tf.reshape(topk_post_psnr, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
+
+      metrics['metrics/post_ssim'], topk_post_ssim_inds = ssim(gt_samples, post_out_samples, sample_size, topk)
+      topk_post_ssim = tf.gather_nd(post_out_samples, topk_post_ssim_inds)  # (topk*bsize, L, H, W, C)
+      topk_post_ssim = tf.reshape(topk_post_ssim, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
+
+      metrics['metrics/post_lpips'], topk_post_lpips_inds = calculate_lpips(gt_samples, post_out_samples,
+                                                                              sample_size, topk)
+      topk_post_lpips = tf.gather_nd(post_out_samples, topk_post_lpips_inds)  # (topk*bsize, L, H, W, C)
+      topk_post_lpips = tf.reshape(topk_post_lpips, [topk, B, L, H, W, C])  # (topk, bsize, L, H, W, C)
+
+      # FVD needs video length >= 9, so repeating the image 9 times
+      gt_repeat = tf.repeat(gt, 9, axis=1)
+      post_out_repeat = tf.repeat(post_out_video, 9, axis=1)
+      metrics['metrics/post_fvd'] = fvd(gt_repeat, post_out_repeat)
+      metrics['metrics/post_fid'] = calculate_fid(gt, post_out_video)
+
+  topk_videos = {
+    'prior': [topk_prior_psnr, topk_prior_ssim, topk_prior_lpips],
+    'post': [topk_post_psnr, topk_post_ssim, topk_post_lpips]
+  }
+  return metrics, topk_videos
 
 
 def write_summaries(summary_writer, metrics, step,
                     vid_past, vid_out, gt,
-                    topk_psnr_videos, topk_ssim_videos, topk_lpips_videos):
-  """"Writes TensorBoard summaries."""
+                    topk_psnr_videos, topk_ssim_videos, topk_lpips_videos,
+                    prior=True):
+  """"Writes TensorBoard summaries.
+  Args:
+    prior: True for prior, False for posterior
+  """
   # Scalar summaries
   for key, val in metrics.items():
     tag = key
-    if key == 'graphs/psnr':
+    if key == 'graphs/prior_psnr' or key == 'graphs/post_psnr':
       image = utils.plot_1d_signals([np.mean(val, axis=0)], [''])
       summary_writer.image(tag=tag, image=image, step=step)
     elif key.startswith('hist'):
@@ -150,19 +190,19 @@ def write_summaries(summary_writer, metrics, step,
   )
   utils.write_video_summaries(
     summary_writer, video_summary, FLAGS.log_n_per_batch, step,
-    tag_name='one', fps=FLAGS.fps, gif=FLAGS.n_future != 1
+    tag_name='one', fps=FLAGS.fps, gif=FLAGS.n_future != 1, prior=prior
   )
   utils.write_video_summaries(
     summary_writer, psnr_video_summary, FLAGS.log_n_per_batch, step,
-    tag_name='psnr', fps=FLAGS.fps, gif=FLAGS.n_future != 1
+    tag_name='psnr', fps=FLAGS.fps, gif=FLAGS.n_future != 1, prior=prior
   )
   utils.write_video_summaries(
     summary_writer, ssim_video_summary, FLAGS.log_n_per_batch, step,
-    tag_name='ssim', fps=FLAGS.fps, gif=FLAGS.n_future != 1
+    tag_name='ssim', fps=FLAGS.fps, gif=FLAGS.n_future != 1, prior=prior
   )
   utils.write_video_summaries(
     summary_writer, lpips_video_summary, FLAGS.log_n_per_batch, step,
-    tag_name='lpips', fps=FLAGS.fps, gif=FLAGS.n_future != 1
+    tag_name='lpips', fps=FLAGS.fps, gif=FLAGS.n_future != 1, prior=prior
   )
   summary_writer.flush()
 
@@ -206,7 +246,7 @@ def generate_video_summary(vid_past, vid_out, gt, topk_psnr, topk_ssim, topk_lpi
 def eval_step(model, batch, state, rng):
   """A single evaluation step."""
   variables = {'params': state.optimizer.target, **state.model_state}
-  (_, out_video, metrics), _ = model.apply(
+  (_, prior_out_video, post_out_video, metrics), _ = model.apply(
       variables,
       video=batch['video'],
       actions=batch['actions'],
@@ -221,10 +261,11 @@ def eval_step(model, batch, state, rng):
   # metrics = jax.lax.all_gather(metrics, axis_name='batch')
 
   # select last n_future frames
-  out_video = out_video[:, n_past-1:]
+  prior_out_video = prior_out_video[:, n_past-1:]
+  post_out_video = post_out_video[:, n_past - 1:]
   gt = batch['video'][:, n_past:]
 
-  return gt, out_video, metrics
+  return gt, prior_out_video, post_out_video, metrics
 
 
 @functools.partial(
@@ -234,19 +275,19 @@ def train_step(model, batch, state, rng):
   """A single training step."""
   def loss(params):
     variables = {'params': params, **state.model_state}
-    (loss, out_video, metrics), new_model_state = model.apply(
+    (loss, prior_out_video, post_out_video, metrics), new_model_state = model.apply(
         variables,
         video=batch['video'],
         actions=batch['actions'],
         rngs=utils.generate_rng_dict(rng),
         step=state.step,
         mutable=['batch_stats'])
-    return loss, (new_model_state, out_video, metrics)
+    return loss, (new_model_state, prior_out_video, post_out_video, metrics)
 
   optimizer = state.optimizer
   grad_fn = jax.value_and_grad(loss, has_aux=True)
   aux, grads = grad_fn(optimizer.target)
-  new_model_state, out_video, metrics = aux[1]
+  new_model_state, prior_out_video, post_out_video, metrics = aux[1]
   grads = lax.pmean(grads, axis_name='batch')
   # metrics = jax.lax.pmean(metrics, axis_name='batch')
   grads_clipped = utils.clip_grads(grads, 100.0)
@@ -269,15 +310,17 @@ def train_step(model, batch, state, rng):
 
   # select last n_future frames
   n_past = FLAGS.n_past
-  out_video = out_video[:, n_past - 1:]
+  prior_out_video = prior_out_video[:, n_past - 1:]
+  post_out_video = post_out_video[:, n_past - 1:]
+  gt = batch['video'][:, n_past:]
 
-  return new_state, rng, metrics, out_video
+  return new_state, rng, metrics, gt, prior_out_video, post_out_video
 
 
 def get_log_directories():
   output_dir = f'output/{FLAGS.dataset}_batch={FLAGS.batch_size}_steps={FLAGS.training_steps}' \
                f'_log={FLAGS.log_every}_sample={FLAGS.sample_size}' \
-               f'_topk={FLAGS.topk}_fps={FLAGS.fps}_aug={FLAGS.aug}' \
+               f'_topk={FLAGS.topk}_fps={FLAGS.fps}_aug={FLAGS.aug}_beta={FLAGS.beta}' \
                f'_time={FLAGS.datetime}'
   model_dir = os.path.join(output_dir, 'model')
   train_log_dir = os.path.join(output_dir, 'train')
@@ -323,7 +366,7 @@ def evaluate(rng_key, state, model, data_itr, eval_steps):
   all_metrics = []
   for _ in range(eval_steps):
     batch = next(data_itr)
-    gt, out_video, metrics = eval_step(model, batch, state, rng_key)
+    gt, out_video, _, metrics = eval_step(model, batch, state, rng_key)
 
     def get_all(x):
       return utils.get_all_devices(jax_utils.unreplicate(x))
@@ -356,7 +399,8 @@ def train():
   log_n_per_batch = FLAGS.log_n_per_batch
   batch_size = FLAGS.batch_size
   dataset = FLAGS.dataset
-  augment_train_data = FLAGS.aug
+  augment_train_data = True if FLAGS.aug == 'True' else False
+  beta = FLAGS.beta
 
   assert dataset == 'smth' or dataset == 'smth_dvd' or dataset == 'smth_dvd_subgoal'
   if dataset == 'smth' or dataset == 'smth_dvd':
@@ -378,7 +422,7 @@ def train():
   # use this to see model progress on a fixed batch of validation video
   fixed_batch = next(valid_itr)
   action_conditioned = True if dataset == 'smth_dvd' or dataset == 'smth_dvd_subgoal' else False
-  model = MODEL_CLS(n_past=n_past, training=True, action_conditioned=action_conditioned)
+  model = MODEL_CLS(n_past=n_past, training=True, action_conditioned=action_conditioned, beta=beta)
 
   state = init_model_state(rng_key, model, sample)
   state = checkpoints.restore_checkpoint(model_dir, state)
@@ -396,7 +440,7 @@ def train():
   for step in trange(start_step, training_steps):
     try:
       output = train_step(model, train_batch, state, rng_key)
-      state, rng_key, metrics, out_video = output
+      state, rng_key, metrics, train_gt, train_prior_out, train_post_out = output
 
       if step % log_every == 0:
         # process and log training info
@@ -408,37 +452,54 @@ def train():
           state_ = jax_utils.unreplicate(synced_state)
           checkpoints.save_checkpoint(model_dir, state_, step, keep=5, keep_every_n_steps=10000)
           train_summary_writer.scalar('info/steps-per-second', steps_per_sec, step)
-          out_video = utils.get_all_devices(out_video)
-          gt = utils.get_all_devices(train_batch['video'])[:, n_past:]
-          train_metrics, train_topk_psnr_videos, train_topk_ssim_videos, train_topk_lpips_videos = additional_metrics(
-            train_metrics, gt, out_video,
-            model, state, train_batch,
+          train_prior_out = utils.get_all_devices(train_prior_out)
+          train_post_out = utils.get_all_devices(train_post_out)
+          train_gt = utils.get_all_devices(train_gt)
+          train_metrics, train_topk_videos = additional_metrics(
+            train_metrics, model, state, train_batch,
+            train_gt, train_prior_out, train_post_out,
             sample_size=sample_size, topk=topk
           )
+          train_topk_prior_psnr, train_topk_prior_ssim, train_topk_prior_lpips = train_topk_videos['prior']
+          train_topk_post_psnr, train_topk_post_ssim, train_topk_post_lpips = train_topk_videos['post']
           if n_future != 1:
-            train_metrics['graphs/psnr'] = psnr_per_frame(gt, out_video)
-          past_video = utils.get_all_devices(train_batch['video'][:, :, :n_past])
+            train_metrics['graphs/prior_psnr'] = psnr_per_frame(train_gt, train_prior_out)
+            train_metrics['graphs/post_psnr'] = psnr_per_frame(train_gt, train_post_out)
+          train_past_video = utils.get_all_devices(train_batch['video'][:, :, :n_past])
           write_summaries(
             train_summary_writer, train_metrics, step,
-            past_video, out_video, gt,
-            train_topk_psnr_videos, train_topk_ssim_videos, train_topk_lpips_videos
+            train_past_video, train_prior_out, train_gt,
+            train_topk_prior_psnr, train_topk_prior_ssim, train_topk_prior_lpips,
+            prior=True
           )
-          logging.info('>>> Step: %d Train Loss: %.4f', step, train_metrics['loss/all'])
-          del gt
-          del out_video
-          del past_video
-          del train_topk_psnr_videos
-          del train_topk_ssim_videos
-          del train_topk_lpips_videos
+          write_summaries(
+            train_summary_writer, train_metrics, step,
+            train_past_video, train_post_out, train_gt,
+            train_topk_post_psnr, train_topk_post_ssim, train_topk_post_lpips,
+            prior=False
+          )
+          logging.info(f">>> Step: {step} "
+                       f"Train Prior Loss: {train_metrics['loss/prior_all']:.4f}"
+                       f"Train Posterior Loss: {train_metrics['loss/post_all']:.4f}")
+          del train_gt
+          del train_prior_out
+          del train_post_out
+          del train_past_video
+          del train_topk_prior_psnr
+          del train_topk_prior_ssim
+          del train_topk_prior_lpips
+          del train_topk_post_psnr
+          del train_topk_post_ssim
+          del train_topk_post_lpips
 
         # run model on validation set
         valid_batch = next(valid_itr)
         valid_output = eval_step(model, valid_batch, state, rng_key)
-        valid_gt, valid_out_video, valid_metrics = valid_output
+        valid_gt, valid_out_video, _, valid_metrics = valid_output
 
         # run model on fixed validation video for progress tracking
         fixed_output = eval_step(model, fixed_batch, state, rng_key)
-        fixed_gt, fixed_out, _ = fixed_output
+        fixed_gt, fixed_out, _, fixed_metrics = fixed_output
 
         # process and log validation info
         if jax.host_id() == 0:
@@ -446,51 +507,61 @@ def train():
           valid_metrics = utils.get_average_across_devices(valid_metrics)
           valid_out_video = utils.get_all_devices(valid_out_video)
           valid_gt = utils.get_all_devices(valid_gt)
-          valid_metrics, valid_topk_psnr_videos, valid_topk_ssim_videos, valid_topk_lpips_videos = additional_metrics(
-            valid_metrics, valid_gt, valid_out_video,
-            model, state, valid_batch,
+          valid_metrics, valid_topk_videos = additional_metrics(
+            valid_metrics, model, state, valid_batch,
+            valid_gt, valid_out_video, post_out_video=None,
             sample_size=sample_size, topk=topk
           )
+          valid_topk_prior_psnr, valid_topk_prior_ssim, valid_topk_prior_lpips = valid_topk_videos['prior']
           if n_future != 1:
-            valid_metrics['graphs/psnr'] = psnr_per_frame(valid_gt, valid_out_video)
+            valid_metrics['graphs/prior_psnr'] = psnr_per_frame(valid_gt, valid_out_video)
           valid_past_video = utils.get_all_devices(valid_batch['video'][:, :, :n_past])
           write_summaries(
             valid_summary_writer, valid_metrics, step,
             valid_past_video, valid_out_video, valid_gt,
-            valid_topk_psnr_videos, valid_topk_ssim_videos, valid_topk_lpips_videos
+            valid_topk_prior_psnr, valid_topk_prior_ssim, valid_topk_prior_lpips,
+            prior=True
           )
-          logging.info('>>> Step: %d Valid Loss: %.4f', step, valid_metrics['loss/all'])
+          logging.info(f">>> Step: {step} "
+                       f"Valid Prior Loss: {valid_metrics['loss/prior_all']:.4f}")
           del valid_gt
           del valid_out_video
           del valid_past_video
-          del valid_topk_psnr_videos
-          del valid_topk_ssim_videos
-          del valid_topk_lpips_videos
+          del valid_topk_prior_psnr
+          del valid_topk_prior_ssim
+          del valid_topk_prior_lpips
 
           # fixed validation video
+          fixed_metrics = utils.get_average_across_devices(fixed_metrics)
           fixed_out = utils.get_all_devices(fixed_out)
           fixed_gt = utils.get_all_devices(fixed_gt)
-          fixed_metrics = {}
-          fixed_metrics, fixed_topk_psnr_videos, fixed_topk_ssim_videos, fixed_topk_lpips_videos = additional_metrics(
-            fixed_metrics, fixed_gt, fixed_out,
-            model, state, fixed_batch,
+
+          fixed_metrics, fixed_topk_videos = additional_metrics(
+            fixed_metrics, model, state, valid_batch,
+            fixed_gt, fixed_out, post_out_video=None,
             sample_size=sample_size, topk=topk
           )
-          fixed_past = utils.get_all_devices(fixed_batch['video'][:, :, :n_past])
+          fixed_topk_prior_psnr, fixed_topk_prior_ssim, fixed_topk_prior_lpips = fixed_topk_videos['prior']
+          if n_future != 1:
+            fixed_metrics['graphs/prior_psnr'] = psnr_per_frame(fixed_gt, fixed_out)
+          fixed_past_video = utils.get_all_devices(fixed_batch['video'][:, :, :n_past])
           write_summaries(
             fixed_summary_writer, fixed_metrics, step,
-            fixed_past, fixed_out, fixed_gt,
-            fixed_topk_psnr_videos, fixed_topk_ssim_videos, fixed_topk_lpips_videos
+            fixed_past_video, fixed_out, fixed_gt,
+            fixed_topk_prior_psnr, fixed_topk_prior_ssim, fixed_topk_prior_lpips,
+            prior=True
           )
+          logging.info(f">>> Step: {step} "
+                       f"Fixed Prior Loss: {fixed_metrics['loss/prior_all']:.4f}")
           del fixed_gt
           del fixed_out
-          del fixed_past
-          del fixed_topk_psnr_videos
-          del fixed_topk_ssim_videos
-          del fixed_topk_lpips_videos
+          del fixed_past_video
+          del fixed_topk_prior_psnr
+          del fixed_topk_prior_ssim
+          del fixed_topk_prior_lpips
 
         # early stopping
-        valid_loss = valid_metrics['loss/all']
+        valid_loss = valid_metrics['loss/prior_all']
         if valid_loss < best_valid_loss:
           best_valid_loss = valid_loss
           last_improvement = 0
@@ -507,7 +578,7 @@ def train():
       logging.info('Manual keyboard interrupt occured.')
       logging.info(f'Done training for %d steps', step)
       output = train_step(model, train_batch, state, rng_key)
-      state, rng_key, metrics, out_video = output
+      state, rng_key, metrics, train_gt, train_prior_out, train_post_out = output
       synced_state = utils.sync_batch_stats(state)
       steps_per_sec = log_every / (time.time() - t_loop_start)
       t_loop_start = time.time()
@@ -516,22 +587,35 @@ def train():
         state_ = jax_utils.unreplicate(synced_state)
         checkpoints.save_checkpoint(model_dir, state_, step, keep=5, keep_every_n_steps=10000)
         train_summary_writer.scalar('info/steps-per-second', steps_per_sec, step)
-        out_video = utils.get_all_devices(out_video)
-        gt = utils.get_all_devices(train_batch['video'])[:, n_past:]
-        train_metrics, train_topk_psnr_videos, train_topk_ssim_videos, train_topk_lpips_videos = additional_metrics(
-          train_metrics, gt, out_video,
-          model, state, train_batch,
+        train_prior_out = utils.get_all_devices(train_prior_out)
+        train_post_out = utils.get_all_devices(train_post_out)
+        train_gt = utils.get_all_devices(train_gt)
+        train_metrics, train_topk_videos = additional_metrics(
+          train_metrics, model, state, train_batch,
+          train_gt, train_prior_out, train_post_out,
           sample_size=sample_size, topk=topk
         )
+        train_topk_prior_psnr, train_topk_prior_ssim, train_topk_prior_lpips = train_topk_videos['prior']
+        train_topk_post_psnr, train_topk_post_ssim, train_topk_post_lpips = train_topk_videos['post']
         if n_future != 1:
-          train_metrics['graphs/psnr'] = psnr_per_frame(gt, out_video)
+          train_metrics['graphs/prior_psnr'] = psnr_per_frame(train_gt, train_prior_out)
+          train_metrics['graphs/post_psnr'] = psnr_per_frame(train_gt, train_post_out)
         past_video = utils.get_all_devices(train_batch['video'][:, :, :n_past])
         write_summaries(
           train_summary_writer, train_metrics, step,
-          past_video, out_video, gt,
-          train_topk_psnr_videos, train_topk_ssim_videos, train_topk_lpips_videos
+          past_video, train_prior_out, train_gt,
+          train_topk_prior_psnr, train_topk_prior_ssim, train_topk_prior_lpips,
+          prior=True
         )
-        logging.info('>>> Step: %d Train Loss: %.4f', step, train_metrics['loss/all'])
+        write_summaries(
+          train_summary_writer, train_metrics, step,
+          past_video, train_post_out, train_gt,
+          train_topk_post_psnr, train_topk_post_ssim, train_topk_post_lpips,
+          prior=False
+        )
+        logging.info(f">>> Step: {step} "
+                     f"Train Prior Loss: {train_metrics['loss/prior_all']:.4f}"
+                     f"Train Posterior Loss: {train_metrics['loss/post_all']:.4f}")
       logging.info('Saved model checkpoint. Ending process.')
 
 def main(argv):
