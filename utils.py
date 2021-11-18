@@ -24,7 +24,7 @@ import jax
 from jax import lax
 import jax.numpy as jnp
 import numpy as np
-import tensorflow.compat.v2 as tf
+import tensorflow as tf
 
 from tensorboard.plugins.image import metadata
 
@@ -171,8 +171,10 @@ def encode_gif(video, fps):
   return out
 
 
-def write_video_summaries(summary_writer, video_batch, num_samples, step, tag_name, fps=5, gif=True):
+def write_video_summaries(summary_writer, video_batch, num_samples, step, tag_name,
+                          fps=5, gif=True, prior=True):
   """Writes a video summary in gif and side by side images format."""
+  prefix = 'prior' if prior else 'post'
   video_batch = image_float_to_uint(video_batch)
   _, video_len, w, h, c = tuple(video_batch.shape)
   video_stacked = []
@@ -186,15 +188,17 @@ def write_video_summaries(summary_writer, video_batch, num_samples, step, tag_na
           axis=0)
       md = metadata.create_summary_metadata(
           display_name=None, description=None)
-      summary_writer.write(tag=f"gif_{tag_name}_{i}", tensor=tensor, step=step, metadata=md)
+      summary_writer.write(tag=f"{prefix}_gif_{tag_name}_{i}", tensor=tensor, step=step, metadata=md)
   video_stacked = tf.concat(video_stacked, axis=2)
   video_len, w, h, c = video_stacked.shape
   mo = np.reshape(video_stacked, [w * video_len, h, c])
-  summary_writer.image(tag=f"sidebyside_{tag_name}", image=mo, step=step)
+  summary_writer.image(tag=f"{prefix}_sidebyside_{tag_name}", image=mo, step=step)
 
 
-def write_selected_video_summaries(summary_writer, video_batch, selected_video_idx, step, fps=5, gif=True):
+def write_selected_video_summaries(summary_writer, video_batch, selected_video_idx, step,
+                                   fps=5, gif=True, prior=True):
   """Writes a video summary in gif and side by side images format."""
+  prefix = 'prior' if prior else 'post'
   video_batch = image_float_to_uint(video_batch)
   _, video_len, w, h, c = tuple(video_batch.shape)
   fixed_video = []
@@ -208,10 +212,10 @@ def write_selected_video_summaries(summary_writer, video_batch, selected_video_i
           axis=0)
       md = metadata.create_summary_metadata(
           display_name=None, description=None)
-      summary_writer.write(tag="gif_fixed", tensor=tensor, step=step, metadata=md)
+      summary_writer.write(tag=f"{prefix}_gif_fixed", tensor=tensor, step=step, metadata=md)
   fixed_video = tf.concat(fixed_video, axis=2)
   mo = np.reshape(fixed_video, [w * video_len, h, c])
-  summary_writer.image(tag="sidebyside_fixed", image=mo, step=step)
+  summary_writer.image(tag=f"{prefix}_sidebyside_fixed", image=mo, step=step)
 
 
 def scheduler(
